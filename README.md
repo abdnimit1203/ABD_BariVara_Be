@@ -11,7 +11,7 @@ To run this project locally or integrate it into your environment, follow these 
 1. Clone the repository:
 
 ```bash
-  git clone https://github.com/Solutya/SolPOS-be.git
+  
 ```
 2. Install the node modules:
 ```bash

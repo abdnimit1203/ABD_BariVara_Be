@@ -495,7 +495,7 @@ exports.changePassword = async (req, res) => {
 //monthlyBill
 exports.createMonthlyBill = async (req, res) => {
   try {
-    const { roomNo, waterBill, gasBill, paid } = req.body;
+    const { roomNo, month, waterBill, gasBill, paid } = req.body;
 
     // Fetch the room details
     const room = await Room.findOne({ roomNo });
@@ -508,13 +508,15 @@ exports.createMonthlyBill = async (req, res) => {
 
     // Get the current and previous month details
     const now = new Date();
-    const currentMonth = now.toLocaleString('default', { month: 'long' });
-    const currentYear = now.getFullYear();
+    const currentMonthDate = new Date(now.getFullYear(), now.getMonth() - 1); // October
+    const previousMonthDate = new Date(now.getFullYear(), now.getMonth() - 2); // September
 
-    const previousDate = new Date(now);
-    previousDate.setMonth(now.getMonth() - 1);
-    const previousMonth = previousDate.toLocaleString('default', { month: 'long' });
-    const previousYear = previousDate.getFullYear();
+    const currentMonth = currentMonthDate.toLocaleString('default', { month: 'long' });
+    const currentYear = currentMonthDate.getFullYear();
+
+    const previousMonth = previousMonthDate.toLocaleString('default', { month: 'long' });
+    const previousYear = previousMonthDate.getFullYear();
+
 
     let currentBill = 0;
 
@@ -563,10 +565,11 @@ exports.createMonthlyBill = async (req, res) => {
     // Create a new monthly bill
     const newBill = new MonthlyBill({
       roomNo,
+      month,
       waterBill: room.hasWaterBill ? waterBill : 0,
       gasBill: room.hasGasBill ? gasBill : 0,
       currentBill,
-      totalBill,
+      total: totalBill || 0,
       paid: paid || false,
       createdAt: new Date(),
     });
@@ -616,52 +619,66 @@ exports.readAllMonthlyBills = async (req, res) => {
 
 exports.updateMonthlyBill = async (req, res) => {
   try {
-      const { id } = req.params;
-      const { waterBill, gasBill, paid } = req.body;
+    const { id } = req.params;
+    const { waterBill, gasBill, paid, paidAmount } = req.body;
 
-      // Find the bill to update
-      const bill = await MonthlyBill.findById(id);
-      if (!bill) {
-          return res.status(404).json({ error: 'Monthly bill not found' });
+    // Find the bill to update
+    const bill = await MonthlyBill.findById(id);
+    if (!bill) {
+      return res.status(404).json({ error: 'Monthly bill not found' });
+    }
+
+    // Fetch the associated room
+    const room = await Room.findOne({ roomNo: bill.roomNo });
+    if (!room) {
+      return res.status(404).json({ error: 'Room associated with this bill not found' });
+    }
+
+    // Update waterBill and gasBill if provided
+    if (waterBill !== undefined) bill.waterBill = waterBill;
+    if (gasBill !== undefined) bill.gasBill = gasBill;
+
+    // Recalculate the total
+    bill.total =
+      room.rent +
+      (room.hasWaterBill ? bill.waterBill : 0) +
+      (room.hasGasBill ? bill.gasBill : 0) +
+      bill.currentBill;
+
+    // Handle partial or full payment
+    const leaseholder = room.leaseholder[0]; // Assuming one leaseholder per room
+    if (leaseholder) {
+      const previousPaidAmount = leaseholder.due || 0; // Default to 0 if no previous payment
+      const newPaidAmount = paidAmount || previousPaidAmount;
+
+      if (newPaidAmount !== previousPaidAmount) {
+        // Update due based on payment difference
+        const paymentDifference = newPaidAmount - previousPaidAmount;
+        leaseholder.due = Math.max(0, leaseholder.due - paymentDifference);
       }
 
-      // Fetch the associated room
-      const room = await Room.findOne({ roomNo: bill.roomNo });
-      if (!room) {
-          return res.status(404).json({ error: 'Room associated with this bill not found' });
+      // If marked as paid, set dues to 0
+      if (paid) {
+        leaseholder.due = Math.max(0, bill.total - newPaidAmount);
+        bill.paid = true;
       }
 
-      // If 'paid' is updated, adjust the leaseholder's due
-      const leaseholder = room.leaseholder[0]; // Assuming one leaseholder per room
-      if (leaseholder && paid !== undefined && paid !== bill.paid) {
-          const totalBill =
-              room.rent +
-              (room.hasWaterBill ? bill.waterBill : 0) +
-              (room.hasGasBill ? bill.gasBill : 0) +
-              bill.currentBill;
+      await room.save();
+    }
 
-          // Adjust due: add or subtract based on the new 'paid' status
-          leaseholder.due = paid ? leaseholder.due - totalBill : leaseholder.due + totalBill;
+    // Update paidAmount if provided
+    if (paidAmount !== undefined) bill.paidAmount = paidAmount;
 
-          // Ensure the due doesn't go below zero
-          if (leaseholder.due < 0) leaseholder.due = 0;
+    await bill.save();
 
-          await room.save();
-      }
-
-      // Update the bill details
-      if (waterBill !== undefined) bill.waterBill = waterBill;
-      if (gasBill !== undefined) bill.gasBill = gasBill;
-      if (paid !== undefined) bill.paid = paid;
-
-      await bill.save();
-
-      res.status(200).json({ message: 'Monthly bill updated successfully', bill });
+    res.status(200).json({ message: 'Monthly bill updated successfully', bill });
   } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'An error occurred while updating the monthly bill' });
+    console.error(error);
+    res.status(500).json({ error: 'An error occurred while updating the monthly bill' });
   }
 };
+
+
 
 exports.calculateMonthlyBills = async (req, res) => {
   try {
