@@ -75,7 +75,12 @@ exports.deleteCategory = async (req, res) => {
 //Rooms
 exports.createRoom = async (req, res) => {
   try {
-    const room = new Room(req.body);
+    const { roomNo , position , category , hasMeter , meterNo , rent } = req.body;
+    const exitsRoom = await Room.findOne( { roomNo: roomNo } )
+    if(exitsRoom){
+      return res.status(400).json({ message: 'Room already exists' });
+    }
+    const room = new Room({ roomNo , position , category , hasMeter , meterNo , rent });
     await room.save();
     res.status(201).json({ message: 'Room created successfully', room });
   } catch (error) {
@@ -177,7 +182,7 @@ exports.updateLeaseholder = async (req, res) => {
     );
 
     if (result) {
-      res.status(200).json({ message: 'Leaseholder updated successfully', room: result });
+      res.status(200).json({ message: 'Leaseholder updated successfully'});
     } else {
       res.status(404).json({ message: 'Room or Leaseholder not found' });
     }
@@ -548,7 +553,7 @@ exports.createMonthlyBill = async (req, res) => {
       currentBill;
 
     // Update leaseholder due if unpaid
-    if (!paid) {
+    if (paid == "false") {
       const leaseholder = room.leaseholder[0]; // Assuming one leaseholder per room
       if (leaseholder) {
         leaseholder.due += totalBill;
@@ -565,7 +570,7 @@ exports.createMonthlyBill = async (req, res) => {
       gasBill: room.hasGasBill ? gasBill : 0,
       currentBill,
       total: totalBill,
-      paid: paid || false,
+      paid: paid || "false",
     });
 
     await newBill.save();
@@ -659,7 +664,7 @@ exports.updateMonthlyBill = async (req, res) => {
       bill.paidAmount = totalPaid;
 
       // Adjust leaseholder dues
-      leaseholder.due = Math.max(0, bill.total - totalPaid);
+      leaseholder.due = Math.max(0, leaseholder.due - paidAmount);
 
       // Update payment status
       if (totalPaid === bill.total) {
@@ -710,7 +715,7 @@ exports.calculateMonthlyBills = async (req, res) => {
           sum + bill.waterBill + bill.gasBill + bill.currentBill, 0);
 
       const totalMonthlyPaid = bills
-          .filter(bill => bill.paid)
+          .filter(bill => bill.paid['false'])
           .reduce((sum, bill) =>
               sum + bill.waterBill + bill.gasBill + bill.currentBill, 0);
 
