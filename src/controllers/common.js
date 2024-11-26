@@ -251,7 +251,7 @@ exports.getMonthlyData = async (req, res) => {
 exports.updateMeterReadingById = async (req, res) => {
   try {
     const { id } = req.params; // Extract the meterReading _id from params
-    const { roomNo, meterNumber, month, year } = req.body; // Extract fields from the request body
+    const { roomNo, meterNumber } = req.body; // Extract fields from the request body
 
     // Validate ObjectId
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -274,8 +274,6 @@ exports.updateMeterReadingById = async (req, res) => {
 
     // Update the parent document with the new data
     parentDoc.meterReadings = updatedMeterReadings;
-    parentDoc.month = month;
-    parentDoc.year = year;
 
     // Save the updated document
     const updatedDoc = await parentDoc.save();
@@ -504,8 +502,8 @@ exports.createMonthlyBill = async (req, res) => {
 
     // Convert month and year to date objects for calculation
     const targetDate = new Date(`${month} 1, ${year}`);
-    const currentMonthDate = new Date(targetDate.getFullYear(), targetDate.getMonth() - 1);
-    const previousMonthDate = new Date(targetDate.getFullYear(), targetDate.getMonth() - 2);
+    const currentMonthDate = new Date(targetDate.getFullYear(), targetDate.getMonth() );
+    const previousMonthDate = new Date(targetDate.getFullYear(), targetDate.getMonth() - 1);
 
     const currentMonth = currentMonthDate.toLocaleString('default', { month: 'long' });
     const currentYear = currentMonthDate.getFullYear();
