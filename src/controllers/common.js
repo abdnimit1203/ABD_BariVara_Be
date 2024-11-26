@@ -502,8 +502,8 @@ exports.createMonthlyBill = async (req, res) => {
 
     // Convert month and year to date objects for calculation
     const targetDate = new Date(`${month} 1, ${year}`);
-    const currentMonthDate = new Date(targetDate.getFullYear(), targetDate.getMonth() );
-    const previousMonthDate = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1);
+    const currentMonthDate = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1);
+    const previousMonthDate = new Date(targetDate.getFullYear(), targetDate.getMonth());
 
     const currentMonth = currentMonthDate.toLocaleString('default', { month: 'long' });
     const currentYear = currentMonthDate.getFullYear();
