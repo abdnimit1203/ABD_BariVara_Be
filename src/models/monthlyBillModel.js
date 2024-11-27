@@ -13,6 +13,7 @@ const monthlyBillSchema = new Schema({
   currentBill: { type: Number, required: false, default: 0 },
   total: { type: Number, required: true },
   paidAmount: { type: Number, default: 0 },
+  dues: { type: Number, default: 0 },
   paid: { type: String, enum: ['false', 'partial', 'true'], default: 'false' },
   createdAt: { type: Date, default: Date.now },
 }, { versionKey: false });
