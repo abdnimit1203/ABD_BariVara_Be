@@ -39,7 +39,7 @@ const router = express.Router();
  // Category
  router.post('/categories', AuthVarification, createCategory);
  router.get('/categories/:id', getOneCategory);
- router.get('/categories', getAllCategories);
+ router.get('/categories',  AuthVarification,getAllCategories);
  router.put('/categories/:id',AuthVarification, updateCategory);
  router.delete('/categories/:id',AuthVarification, deleteCategory);
 
@@ -57,7 +57,7 @@ const router = express.Router();
 
 //monthly meter data
  router.post('/monthlyData',AuthVarification, addMonthlyMeterData);
- router.get('/monthlyData', getMonthlyData);
+ router.get('/monthlyData',  AuthVarification,getMonthlyData);
  router.put('/meterReadings/:id', AuthVarification, updateMeterReadingById);
  router.delete('/meterReadings/:id', AuthVarification, deleteMeterReadingById);
 
