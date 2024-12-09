@@ -75,7 +75,12 @@ exports.deleteCategory = async (req, res) => {
 //Rooms
 exports.createRoom = async (req, res) => {
   try {
-    const room = new Room(req.body);
+    const { roomNo , position , category , hasMeter , meterNo , rent } = req.body;
+    const exitsRoom = await Room.findOne( { roomNo: roomNo } )
+    if(exitsRoom){
+      return res.status(400).json({ message: 'Room already exists' });
+    }
+    const room = new Room({ roomNo , position , category , hasMeter , meterNo , rent });
     await room.save();
     res.status(201).json({ message: 'Room created successfully', room });
   } catch (error) {
@@ -177,7 +182,7 @@ exports.updateLeaseholder = async (req, res) => {
     );
 
     if (result) {
-      res.status(200).json({ message: 'Leaseholder updated successfully', room: result });
+      res.status(200).json({ message: 'Leaseholder updated successfully'});
     } else {
       res.status(404).json({ message: 'Room or Leaseholder not found' });
     }
@@ -246,7 +251,7 @@ exports.getMonthlyData = async (req, res) => {
 exports.updateMeterReadingById = async (req, res) => {
   try {
     const { id } = req.params; // Extract the meterReading _id from params
-    const { roomNo, meterNumber, month, year } = req.body; // Extract fields from the request body
+    const { roomNo, meterNumber } = req.body; // Extract fields from the request body
 
     // Validate ObjectId
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -269,8 +274,6 @@ exports.updateMeterReadingById = async (req, res) => {
 
     // Update the parent document with the new data
     parentDoc.meterReadings = updatedMeterReadings;
-    parentDoc.month = month;
-    parentDoc.year = year;
 
     // Save the updated document
     const updatedDoc = await parentDoc.save();
@@ -495,21 +498,12 @@ exports.changePassword = async (req, res) => {
 //monthlyBill
 exports.createMonthlyBill = async (req, res) => {
   try {
-    const { roomNo, month, waterBill, gasBill, paid } = req.body;
+    const { roomNo, month, year, waterBill = 0, gasBill = 0, paidAmount = 0, paid } = req.body;
 
-    // Fetch the room details
-    const room = await Room.findOne({ roomNo });
-    if (!room) {
-      return res.status(404).json({ error: 'Room not found' });
-    }
-
-    // Fetch rent from the room schema
-    const rent = room.rent;
-
-    // Get the current and previous month details
-    const now = new Date();
-    const currentMonthDate = new Date(now.getFullYear(), now.getMonth() - 1); // October
-    const previousMonthDate = new Date(now.getFullYear(), now.getMonth() - 2); // September
+    // Convert month and year to date objects for calculation
+    const targetDate = new Date(`${month} 1, ${year}`);
+    const currentMonthDate = new Date(targetDate.getFullYear(), targetDate.getMonth() + 1);
+    const previousMonthDate = new Date(targetDate.getFullYear(), targetDate.getMonth());
 
     const currentMonth = currentMonthDate.toLocaleString('default', { month: 'long' });
     const currentYear = currentMonthDate.getFullYear();
@@ -517,30 +511,36 @@ exports.createMonthlyBill = async (req, res) => {
     const previousMonth = previousMonthDate.toLocaleString('default', { month: 'long' });
     const previousYear = previousMonthDate.getFullYear();
 
+    // Fetch room details
+    const room = await Room.findOne({ roomNo });
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
 
+    const rent = room.rent;
     let currentBill = 0;
+    let previousReading = 0;
+    let currentReading = 0;
+    let dues = 0;
 
     // Calculate current bill based on meter data
     if (room.hasMeter) {
-      // Fetch current meter data
       const currentMeterData = await MonthlyMeterData.findOne({ month: currentMonth, year: currentYear });
       if (!currentMeterData) {
         return res.status(404).json({ error: 'Current meter data not found' });
       }
 
-      const currentReading = currentMeterData.meterReadings.find((meter) => meter.roomNo === roomNo)?.meterNumber;
+      currentReading = currentMeterData.meterReadings.find((meter) => meter.roomNo === roomNo)?.meterNumber;
       if (!currentReading) {
         return res.status(404).json({ error: 'Current meter reading not found' });
       }
 
-      // Fetch previous meter data
       const previousMeterData = await MonthlyMeterData.findOne({ month: previousMonth, year: previousYear });
-      const previousReading = previousMeterData?.meterReadings.find((meter) => meter.roomNo === roomNo)?.meterNumber || 0;
+      previousReading = previousMeterData?.meterReadings.find((meter) => meter.roomNo === roomNo)?.meterNumber || 0;
 
-      // Ensure readings are valid
       if (currentReading >= previousReading) {
         const usage = currentReading - previousReading;
-        currentBill = usage * 10; // Multiplication factor
+        currentBill = usage * 10; // Example: cost per unit of usage
       } else {
         return res.status(400).json({ error: 'Invalid meter readings: current reading is less than previous reading' });
       }
@@ -553,33 +553,38 @@ exports.createMonthlyBill = async (req, res) => {
       (room.hasGasBill ? gasBill : 0) +
       currentBill;
 
-    // Update the leaseholder's due if unpaid
-    if (!paid) {
+    // Update leaseholder due if unpaid or partially paid
+    if (paid === "false" || paid === "partial") {
       const leaseholder = room.leaseholder[0]; // Assuming one leaseholder per room
       if (leaseholder) {
         leaseholder.due += totalBill;
+        dues = leaseholder.due; // Store updated leaseholder's due
       }
       await room.save();
     }
 
-    // Create a new monthly bill
+    // Create the monthly bill
     const newBill = new MonthlyBill({
       roomNo,
       month,
+      year,
+      rent: rent,
       waterBill: room.hasWaterBill ? waterBill : 0,
       gasBill: room.hasGasBill ? gasBill : 0,
+      prevNumber: previousReading,
+      currNumber: currentReading,
       currentBill,
-      total: totalBill || 0,
-      paid: paid || false,
-      createdAt: new Date(),
+      total: totalBill,
+      dues: dues || 0, // Store the updated dues
+      paidAmount,
+      paid: paid || "false",
     });
 
     await newBill.save();
 
     res.status(201).json({
       message: 'Monthly bill created successfully',
-      totalBill,
-      paid: newBill.paid,
+      newBill
     });
   } catch (error) {
     console.error(error);
@@ -620,7 +625,7 @@ exports.readAllMonthlyBills = async (req, res) => {
 exports.updateMonthlyBill = async (req, res) => {
   try {
     const { id } = req.params;
-    const { waterBill, gasBill, paid, paidAmount } = req.body;
+    const { waterBill, gasBill, paidAmount } = req.body;
 
     // Find the bill to update
     const bill = await MonthlyBill.findById(id);
@@ -638,40 +643,56 @@ exports.updateMonthlyBill = async (req, res) => {
     if (waterBill !== undefined) bill.waterBill = waterBill;
     if (gasBill !== undefined) bill.gasBill = gasBill;
 
-    // Recalculate the total
+    // Recalculate the total bill
     bill.total =
       room.rent +
       (room.hasWaterBill ? bill.waterBill : 0) +
       (room.hasGasBill ? bill.gasBill : 0) +
       bill.currentBill;
 
-    // Handle partial or full payment
     const leaseholder = room.leaseholder[0]; // Assuming one leaseholder per room
-    if (leaseholder) {
-      const previousPaidAmount = leaseholder.due || 0; // Default to 0 if no previous payment
-      const newPaidAmount = paidAmount || previousPaidAmount;
-
-      if (newPaidAmount !== previousPaidAmount) {
-        // Update due based on payment difference
-        const paymentDifference = newPaidAmount - previousPaidAmount;
-        leaseholder.due = Math.max(0, leaseholder.due - paymentDifference);
-      }
-
-      // If marked as paid, set dues to 0
-      if (paid) {
-        leaseholder.due = Math.max(0, bill.total - newPaidAmount);
-        bill.paid = true;
-      }
-
-      await room.save();
+    if (!leaseholder) {
+      return res.status(404).json({ error: 'Leaseholder not found for this room' });
     }
 
-    // Update paidAmount if provided
-    if (paidAmount !== undefined) bill.paidAmount = paidAmount;
+    // Handle paidAmount
+    if (paidAmount !== undefined) {
+      const totalPaid = bill.paidAmount + paidAmount;
 
+      // Detect overpayment
+      if (totalPaid > bill.total) {
+        return res.status(400).json({
+          error: `Overpayment detected! The total bill is ${bill.total}, but the payment exceeds this amount. Please adjust the payment.`,
+        });
+      }
+
+      // Update paidAmount
+      bill.paidAmount = totalPaid;
+
+      // Adjust leaseholder dues
+      leaseholder.due = Math.max(0, leaseholder.due - paidAmount);
+
+      // Update dues in the bill to reflect updated leaseholder dues
+      bill.dues = leaseholder.due;
+
+      // Update payment status
+      if (totalPaid === bill.total) {
+        bill.paid = 'true'; // Fully paid
+      } else if (totalPaid > 0) {
+        bill.paid = 'partial'; // Partially paid
+      } else {
+        bill.paid = 'false'; // Not paid
+      }
+    }
+
+    // Save changes to the bill and the room
     await bill.save();
+    await room.save();
 
-    res.status(200).json({ message: 'Monthly bill updated successfully', bill });
+    res.status(200).json({
+      message: 'Monthly bill updated successfully',
+      bill,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'An error occurred while updating the monthly bill' });
@@ -680,44 +701,54 @@ exports.updateMonthlyBill = async (req, res) => {
 
 
 
+
+
 exports.calculateMonthlyBills = async (req, res) => {
   try {
-      // Get the current month and year
-      const currentDate = new Date();
-      const currentMonth = currentDate.getMonth(); // 0-based index for months
-      const currentYear = currentDate.getFullYear();
+    const { month, year } = req.body;
 
-      // Filter for bills created in the current month and year
-      const startOfMonth = new Date(currentYear, currentMonth, 1);
-      const endOfMonth = new Date(currentYear, currentMonth + 1, 0);
+    if (!month || !year) {
+      return res.status(400).json({ error: 'Month and year are required' });
+    }
 
-      const bills = await MonthlyBill.find({
-          createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-      });
+    // Filter for bills by month and year
+    const bills = await MonthlyBill.find({
+      month,
+      year,
+    });
 
-      // Calculate total monthly bill, paid, and dues
-      const totalMonthlyBill = bills.reduce((sum, bill) =>
-          sum + bill.waterBill + bill.gasBill + bill.currentBill, 0);
+    if (bills.length === 0) {
+      return res.status(404).json({ message: 'No bills found for the specified month and year' });
+    }
 
-      const totalMonthlyPaid = bills
-          .filter(bill => bill.paid)
-          .reduce((sum, bill) =>
-              sum + bill.waterBill + bill.gasBill + bill.currentBill, 0);
+    // Calculate total monthly bill, paid, and dues
+    const totalMonthlyBill = bills.reduce(
+      (sum, bill) => sum + bill.total,
+      0
+    );
 
-      const totalMonthlyDues = totalMonthlyBill - totalMonthlyPaid;
+    const totalMonthlyPaid = bills.reduce(
+      (sum, bill) => sum + bill.paidAmount,
+      0
+    );
 
-      res.status(200).json({
-          message: 'Monthly bills calculated successfully',
-          totalMonthlyBill,
-          totalMonthlyPaid,
-          totalMonthlyDues,
-          month: currentDate.toLocaleString('default', { month: 'long' }),
-          year: currentYear
-      });
+    const totalMonthlyDues = bills.reduce(
+      (sum, bill) => sum + bill.dues,
+      0
+    );
+
+    res.status(200).json({
+      message: 'Monthly bills calculated successfully',
+      totalMonthlyBill,
+      totalMonthlyPaid,
+      totalMonthlyDues,
+      month,
+      year,
+    });
   } catch (error) {
-      res.status(500).json({
-          message: 'Error calculating monthly bills',
-          error: error.message
-      });
+    res.status(500).json({
+      message: 'Error calculating monthly bills',
+      error: error.message,
+    });
   }
 };
