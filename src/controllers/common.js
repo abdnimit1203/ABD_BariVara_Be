@@ -811,12 +811,12 @@ exports.updateMonthlyBill = async (req, res) => {
     if (waterBill !== undefined) bill.waterBill = waterBill;
     if (gasBill !== undefined) bill.gasBill = gasBill;
 
-    // Recalculate the total
-    bill.total =
-      room.rent +
-      (room.hasWaterBill ? bill.waterBill : 0) +
-      (room.hasGasBill ? bill.gasBill : 0) +
-      bill.currentBill;
+    // // Recalculate the total
+    // bill.total =
+    //   room.rent +
+    //   (room.hasWaterBill ? bill.waterBill : 0) +
+    //   (room.hasGasBill ? bill.gasBill : 0) +
+    //   bill.currentBill;
 
     // Handle partial or full payment
     const leaseholder = room.leaseholder[0];
@@ -830,7 +830,7 @@ exports.updateMonthlyBill = async (req, res) => {
         // Update due based on payment difference
         const paymentDifference = bill.total - newPaidAmount;
         console.log("paymentDifference: ", paymentDifference);
-        leaseholder.due = leaseholder.due + paymentDifference;
+        leaseholder.due =  paymentDifference;
         // If any payment received--
         if (paymentDifference == 0) {
           bill.paid = true;
