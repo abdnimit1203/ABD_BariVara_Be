@@ -5,7 +5,7 @@ const CreateToken = async (data) => {
     try {
         // Include _id from userData in the token payload
         const payload = {
-            exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // Expiration time
+            exp: Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60), // Expiration time
             data: data,
             _id: data._id// Include additional user data if needed
         };

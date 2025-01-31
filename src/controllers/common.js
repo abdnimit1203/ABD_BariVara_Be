@@ -584,6 +584,14 @@ exports.createMonthlyBill = async (req, res) => {
   try {
     const { roomNo, month, waterBill, gasBill, paid, year } = req.body;
     console.log(month, year);
+
+    const filter = { year, month };
+    const existingData = await MonthlyBill.findOne(filter);
+    if (existingData && existingData.bills.some((r) => r.roomNo === roomNo)) {
+      return res.status(400).json({
+        message: "Monthly bill already exists for this room and month",
+      });
+    }
     // Fetch the room details
     const room = await Room.findOne({ roomNo });
     if (!room) {
@@ -597,10 +605,23 @@ exports.createMonthlyBill = async (req, res) => {
     // Fetch rent from the room schema
     const rent = room.rent;
 
-    // Get the current and previous month details
-    const now = new Date();
-    const currentMonthDate = new Date(now.getFullYear(), now.getMonth()); // October
-    const previousMonthDate = new Date(now.getFullYear(), now.getMonth() - 1); // September
+    // // Get the current and previous month details
+    // const now = new Date();
+    // const currentMonthDate = new Date(now.getFullYear(), now.getMonth()); // October
+    // const previousMonthDate = new Date(now.getFullYear(), now.getMonth() - 1); // September
+
+    const parsedDate = new Date(`${month} 1, ${year}`); // January 1, 2025
+    const parsedMonth = parsedDate.getMonth(); // 0 (January)
+    const parsedYear = parsedDate.getFullYear(); // 2025
+
+    // Current and previous month logic
+    const currentMonthDate = new Date(parsedYear, parsedMonth); // January 2025
+    const previousMonthDate = new Date(parsedYear, parsedMonth - 1); // December 2024
+
+    console.log({
+      currentMonthDate: currentMonthDate.toString(), // "Wed Jan 01 2025"
+      previousMonthDate: previousMonthDate.toString(), // "Sun Dec 01 2024"
+    });
 
     const currentMonth = currentMonthDate.toLocaleString("default", {
       month: "long",
@@ -646,15 +667,25 @@ exports.createMonthlyBill = async (req, res) => {
         month: previousMonth,
         year: previousYear,
       });
-      const previousReading =
-        previousMeterData?.meterReadings.find(
-          (meter) => meter.roomNo === roomNo
-        )?.meterNumber || 0;
+      // Previous code : Lets create monthly data if it finds no data and sets the previous reading to zero
+
+      // const previousReading =
+      //   previousMeterData?.meterReadings.find(
+      //     (meter) => meter.roomNo === roomNo
+      //   )?.meterNumber || 0;
+
+      const previousReading = previousMeterData?.meterReadings.find(
+        (meter) => meter.roomNo === roomNo
+      )?.meterNumber;
       const previousWaterReading =
         previousMeterData?.meterReadings.find(
           (meter) => meter.roomNo === "Water Meter (পানি)"
         )?.meterNumber || 0;
-
+      if (!previousReading) {
+        return res
+          .status(404)
+          .json({ error: "Previous meter reading not found" });
+      }
       // Ensure readings are valid
       if (currentReading >= previousReading) {
         const usage = currentReading - previousReading;
@@ -663,11 +694,11 @@ exports.createMonthlyBill = async (req, res) => {
         // Water Meter Electric Bill calculator
         if (room.hasWaterBill) {
           const waterUsage = Math.floor(
-            (currentWaterReading - previousWaterReading) / 3
+            (currentWaterReading - previousWaterReading) / 4
           );
           waterUnitCost = waterUsage * 10; // Multiplication factor
-          console.log("Water Floor : " ,waterUsage)
-          console.log("waterUnitCost :" ,waterUnitCost)
+          console.log("Water Floor : ", waterUsage);
+          console.log("waterUnitCost :", waterUnitCost);
         }
         curReading = currentReading;
         prevReading = previousReading;
@@ -699,29 +730,49 @@ exports.createMonthlyBill = async (req, res) => {
     }
 
     // Create a new monthly bill
-    const newBill = new MonthlyBill({
-      roomNo,
-      month,
-      rent,
-      due,
-      currentReading: curReading,
-      previousReading: prevReading,
+    // const newBill = new MonthlyBill({
+
+    // });
+
+    // await newBill.save();
+    const newFilter = {
       billingMonth: previousMonth,
       billingYear: previousYear,
-      waterBill: room.hasWaterBill ? waterUnitCost : 0,
-      gasBill: room.hasGasBill ? gasBill : 0,
-      currentBill,
-      total: totalBill || 0,
-      paid: paid || false,
-      createdAt: new Date(),
-    });
+      month,
+      year,
+    };
 
-    await newBill.save();
+    const update = {
+      $push: {
+        bills: {
+          roomNo,
+          rent,
+          due,
+          currentReading: curReading,
+          previousReading: prevReading,
+          billingMonth: previousMonth,
+          billingYear: previousYear,
+          waterBill: room.hasWaterBill ? waterUnitCost : 0,
+          gasBill: room.hasGasBill ? gasBill : 0,
+          currentBill,
+          total: totalBill || 0,
+          paid: paid || false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    };
+    const options = { upsert: true, new: true };
 
+    const result = await MonthlyBill.findOneAndUpdate(
+      newFilter,
+      update,
+      options
+    );
     res.status(201).json({
       message: "Monthly bill created successfully",
       totalBill,
-      paid: newBill.paid,
+      paid: paid,
     });
   } catch (error) {
     console.error(error);
@@ -749,9 +800,6 @@ exports.readMonthlyBill = async (req, res) => {
   }
 };
 
-
-
-
 // exports.readAllMonthlyBills = async (req, res) => {
 //   try {
 //     const bills = await MonthlyBill.find();
@@ -764,17 +812,16 @@ exports.readMonthlyBill = async (req, res) => {
 //   }
 // };
 
-
 // EDITED CODE BELOW && PREVIOUS CODE ABOVE
 
 exports.readAllMonthlyBills = async (req, res) => {
   try {
-    const { month, year } = req.query;  // Get month and year from the request query
-console.log(month,year)
+    const { month, year } = req.query; // Get month and year from the request query
+    console.log(month, year);
     // Create a filter object to apply only if month and year are provided
     const filter = {};
-    if (month) filter.billingMonth = month;  // Add month to filter if provided
-    if (year) filter.billingYear = year;    // Add year to filter if provided
+    if (month) filter.billingMonth = month; // Add month to filter if provided
+    if (year) filter.billingYear = year; // Add year to filter if provided
 
     // Fetch the bills from the database, applying the filter if necessary
     const bills = await MonthlyBill.find(filter);
@@ -783,21 +830,38 @@ console.log(month,year)
     res.status(200).json(bills);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "An error occurred while fetching the monthly bills" });
+    res
+      .status(500)
+      .json({ error: "An error occurred while fetching the monthly bills" });
   }
 };
-
 
 exports.updateMonthlyBill = async (req, res) => {
   try {
     const { id } = req.params;
-    const { waterBill, gasBill, paid, paidAmount } = req.body;
+    const { roomNo, waterBill, gasBill, paid, paidAmount } = req.body;
 
     // Find the bill to update
-    const bill = await MonthlyBill.findById(id);
-    if (!bill) {
-      return res.status(404).json({ error: "Monthly bill not found" });
+    // const bill = await MonthlyBill.findById(id);
+    // if (!bill) {
+    //   return res.status(404).json({ error: "Monthly bill not found" });
+    // }
+
+    // Find the parent document that contains the specific meterReading _id
+    const parentBill = await MonthlyBill.findOne({
+      "bills._id": id,
+    });
+
+    if (!parentBill) {
+      return res.status(404).json({ status: "fail", data: "Bill not found" });
     }
+    const bill = parentBill.bills.find((b) => b._id.toString() === id);
+    if (!bill) {
+      return res
+        .status(404)
+        .json({ status: "fail", data: "Subdocument not found" });
+    }
+    console.log("FOUND BILL:", bill, id);
 
     // Fetch the associated room
     const room = await Room.findOne({ roomNo: bill.roomNo });
@@ -830,7 +894,7 @@ exports.updateMonthlyBill = async (req, res) => {
         // Update due based on payment difference
         const paymentDifference = bill.total - newPaidAmount;
         console.log("paymentDifference: ", paymentDifference);
-        leaseholder.due =  paymentDifference;
+        leaseholder.due = paymentDifference;
         // If any payment received--
         if (paymentDifference == 0) {
           bill.paid = true;
@@ -840,20 +904,25 @@ exports.updateMonthlyBill = async (req, res) => {
           bill.paid = "Over Paid";
         }
       }
-
-      // If marked as paid, set dues to 0
-      if (paid) {
-        leaseholder.due = bill.total + newPaidAmount;
-        bill.paid = true;
-      }
-
       await room.save();
     }
 
-    // Update paidAmount if provided
-    if (paidAmount !== undefined) bill.paidAmount = paidAmount;
+    // Handle payment logic
+    if (paidAmount !== undefined) {
+      const paymentDifference = bill.total - paidAmount;
 
-    await bill.save();
+      bill.paid =
+        paymentDifference === 0
+          ? true
+          : paymentDifference > 0
+          ? "Partial Paid"
+          : "Over Paid";
+      bill.paidAmount = paidAmount;
+      bill.updatedAt = new Date();
+    }
+
+    // Save the parent document
+    await parentBill.save();
 
     res
       .status(200)
@@ -868,31 +937,23 @@ exports.updateMonthlyBill = async (req, res) => {
 
 exports.calculateMonthlyBills = async (req, res) => {
   try {
-    // Get the current month and year
-    const currentDate = new Date();
-    const currentMonth = currentDate.getMonth(); // 0-based index for months
-    const currentYear = currentDate.getFullYear();
+    const { billingMonth, billingYear } = req.body;
+    console.log(billingMonth, billingYear);
+    const bills = await MonthlyBill.find({ billingMonth, billingYear });
 
-    // Filter for bills created in the current month and year
-    const startOfMonth = new Date(currentYear, currentMonth, 1);
-    const endOfMonth = new Date(currentYear, currentMonth + 1, 0);
-
-    const bills = await MonthlyBill.find({
-      createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-    });
-
+    const newBills = bills;
+    console.log(newBills[0]?.total);
     // Calculate total monthly bill, paid, and dues
-    const totalMonthlyBill = bills.reduce(
-      (sum, bill) => sum + bill.waterBill + bill.gasBill + bill.currentBill,
+    // Calculate total monthly bill, paid, and dues
+    const totalMonthlyBill = newBills.reduce(
+      (sum, bill) => sum + bill.total,
       0
     );
 
-    const totalMonthlyPaid = bills
-      .filter((bill) => bill.paid)
-      .reduce(
-        (sum, bill) => sum + bill.waterBill + bill.gasBill + bill.currentBill,
-        0
-      );
+    // Check if the bill is paid or partially paid based on the 'paid' string value
+    const totalMonthlyPaid = newBills
+      .filter((bill) => !bill.paid === false)
+      .reduce((sum, bill) => sum + bill.paidAmount, 0);
 
     const totalMonthlyDues = totalMonthlyBill - totalMonthlyPaid;
 
@@ -901,8 +962,8 @@ exports.calculateMonthlyBills = async (req, res) => {
       totalMonthlyBill,
       totalMonthlyPaid,
       totalMonthlyDues,
-      month: currentDate.toLocaleString("default", { month: "long" }),
-      year: currentYear,
+      billingMonth: billingMonth,
+      billingYear: billingYear,
     });
   } catch (error) {
     res.status(500).json({
