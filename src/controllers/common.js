@@ -694,7 +694,7 @@ exports.createMonthlyBill = async (req, res) => {
         // Water Meter Electric Bill calculator
         if (room.hasWaterBill) {
           const waterUsage = Math.floor(
-            (currentWaterReading - previousWaterReading) / 4
+            (currentWaterReading - previousWaterReading) / 3
           );
           waterUnitCost = waterUsage * 10; // Multiplication factor
           console.log("Water Floor : ", waterUsage);
