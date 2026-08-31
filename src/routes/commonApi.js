@@ -12,6 +12,7 @@ const {
     deleteRoom,
     addLeaseholder,
     updateLeaseholder,
+    vacateLeaseholder,
     deleteLeaseholder,
     addMonthlyMeterData,
     getMonthlyData,
@@ -51,6 +52,7 @@ const router = express.Router();
  router.delete('/rooms/:id',AuthVarification, deleteRoom);
  router.post('/rooms/:id/leaseholder',AuthVarification, addLeaseholder);
  router.put('/rooms/:id/leaseholder/:leaseholderId', AuthVarification, updateLeaseholder);
+ router.put('/rooms/:id/leaseholder/:leaseholderId/vacate', AuthVarification, vacateLeaseholder);
  router.delete('/rooms/:id/leaseholder/:leaseholderId', AuthVarification, deleteLeaseholder);
 
 

@@ -7,6 +7,12 @@ const MonthlyBill = require("../models/monthlyBillModel");
 const { hashPass, comparePass } = require("../utils/bcryptPassword");
 const CreateToken = require("../utils/createToken");
 const mongoose = require("mongoose");
+const {
+  applyNewTenant,
+  applyTenantUpdate,
+  applyVacateTenant,
+  applyDueAdjustment,
+} = require("../modules/occupancy");
 
 //categories
 exports.createCategory = async (req, res) => {
@@ -175,19 +181,16 @@ exports.deleteRoom = async (req, res) => {
 exports.addLeaseholder = async (req, res) => {
   try {
     const { id } = req.params;
-    const newLeaseholder = req.body;
-    const result = await Room.findByIdAndUpdate(
-      id,
-      { $push: { leaseholder: { $each: [newLeaseholder], $position: 0 } } },
-      { new: true }
-    );
-    if (result) {
-      res
-        .status(200)
-        .json({ message: "Leaseholder added successfully", room: result });
-    } else {
-      res.status(404).json({ message: "Room not found" });
+    const room = await Room.findById(id);
+    if (!room) {
+      return res.status(404).json({ message: "Room not found" });
     }
+    const updatedLeaseholders = applyNewTenant(room.leaseholder, req.body);
+    room.leaseholder = updatedLeaseholders;
+    const result = await room.save();
+    res
+      .status(200)
+      .json({ message: "Leaseholder added successfully", room: result });
   } catch (error) {
     res
       .status(500)
@@ -220,7 +223,37 @@ exports.updateLeaseholder = async (req, res) => {
   }
 };
 
+exports.vacateLeaseholder = async (req, res) => {
+  try {
+    const { id, leaseholderId } = req.params;
+    const { vacateDate } = req.body;
+
+    const room = await Room.findById(id);
+    if (!room) {
+      return res.status(404).json({ message: "Room not found" });
+    }
+
+    const updatedLeaseholders = applyVacateTenant(
+      room.leaseholder,
+      leaseholderId,
+      vacateDate || new Date()
+    );
+    room.leaseholder = updatedLeaseholders;
+    const result = await room.save();
+
+    res.status(200).json({
+      message: "Room marked as vacant successfully",
+      room: result,
+    });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: "Error vacating room", error: error.message });
+  }
+};
+
 exports.deleteLeaseholder = async (req, res) => {
+
   try {
     const { id, leaseholderId } = req.params; // Room ID and Leaseholder ID
 
@@ -841,27 +874,20 @@ exports.updateMonthlyBill = async (req, res) => {
     const { id } = req.params;
     const { roomNo, waterBill, gasBill, paid, paidAmount } = req.body;
 
-    // Find the bill to update
-    // const bill = await MonthlyBill.findById(id);
-    // if (!bill) {
-    //   return res.status(404).json({ error: "Monthly bill not found" });
-    // }
-
-    // Find the parent document that contains the specific meterReading _id
+    // Find the parent document that contains the specific bill _id
     const parentBill = await MonthlyBill.findOne({
       "bills._id": id,
     });
 
     if (!parentBill) {
-      return res.status(404).json({ status: "fail", data: "Bill not found" });
+      return res.status(404).json({ status: "fail", message: "Bill not found" });
     }
     const bill = parentBill.bills.find((b) => b._id.toString() === id);
     if (!bill) {
       return res
         .status(404)
-        .json({ status: "fail", data: "Subdocument not found" });
+        .json({ status: "fail", message: "Subdocument not found" });
     }
-    console.log("FOUND BILL:", bill, id);
 
     // Fetch the associated room
     const room = await Room.findOne({ roomNo: bill.roomNo });
@@ -875,49 +901,29 @@ exports.updateMonthlyBill = async (req, res) => {
     if (waterBill !== undefined) bill.waterBill = waterBill;
     if (gasBill !== undefined) bill.gasBill = gasBill;
 
-    // // Recalculate the total
-    // bill.total =
-    //   room.rent +
-    //   (room.hasWaterBill ? bill.waterBill : 0) +
-    //   (room.hasGasBill ? bill.gasBill : 0) +
-    //   bill.currentBill;
-
-    // Handle partial or full payment
-    const leaseholder = room.leaseholder[0];
-    console.log(leaseholder);
-    // Assuming one leaseholder per room
-    if (leaseholder) {
-      const previousPaidAmount = leaseholder.due || 0; // Default to 0 if no previous payment
-      const newPaidAmount = paidAmount || previousPaidAmount;
-      console.log("New Paid Amm: ", newPaidAmount);
-      if (newPaidAmount !== previousPaidAmount) {
-        // Update due based on payment difference
-        const paymentDifference = bill.total - newPaidAmount;
-        console.log("paymentDifference: ", paymentDifference);
-        leaseholder.due = paymentDifference;
-        // If any payment received--
-        if (paymentDifference == 0) {
-          bill.paid = true;
-        } else if (paymentDifference >= 0) {
-          bill.paid = "Partial Paid";
-        } else {
-          bill.paid = "Over Paid";
-        }
+    // Handle payment settlement
+    if (paidAmount !== undefined && paidAmount !== null && String(paidAmount).trim() !== "") {
+      const numericPaidAmount = Number(paidAmount);
+      if (isNaN(numericPaidAmount)) {
+        return res.status(400).json({ error: "Invalid payment amount. Must be a valid number." });
       }
-      await room.save();
-    }
 
-    // Handle payment logic
-    if (paidAmount !== undefined) {
-      const paymentDifference = bill.total - paidAmount;
+      // Calculate unpaid difference: bill.total already includes previous running due
+      const paymentDifference = bill.total - numericPaidAmount;
 
-      bill.paid =
-        paymentDifference === 0
-          ? true
-          : paymentDifference > 0
-          ? "Partial Paid"
-          : "Over Paid";
-      bill.paidAmount = paidAmount;
+      // Settle the monthly bill as PAID
+      bill.paid = "true";
+      bill.paidAmount = numericPaidAmount;
+      bill.updatedAt = new Date();
+
+      // Update the active tenant's running due balance
+      const leaseholder = room.leaseholder && room.leaseholder.length > 0 ? room.leaseholder[0] : null;
+      if (leaseholder) {
+        leaseholder.due = paymentDifference;
+        await room.save();
+      }
+    } else if (paid !== undefined) {
+      bill.paid = String(paid);
       bill.updatedAt = new Date();
     }
 
