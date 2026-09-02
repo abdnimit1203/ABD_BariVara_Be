@@ -18,11 +18,16 @@ const roomsSchema = new Schema({
                 rentFrom: { type: Date, required: true },
                 due: { type: Number, default: 0 },
                 rentTo: { type: Date, default: null },
+                hasWasteBill: { type: Boolean, default: true },
             }
         ],
         default: null
     },
-    rent: { type: Number, required: true }
+    rent: { type: Number, required: true },
+    // Forward-compat seam for future household room ownership. `null` currently
+    // means "not yet assigned to a household" only — no authorization logic
+    // reads this field yet.
+    ownerId: { type: Schema.Types.ObjectId, ref: 'users', default: null }
 }, { versionKey: false });
 
 module.exports = mongoose.model('rooms', roomsSchema);

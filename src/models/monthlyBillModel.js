@@ -44,7 +44,13 @@ const monthlyBillSchema = new Schema({
     billingYear: { type: Number, required: false },
     waterBill: { type: Number, required: false, default: 0 },
     gasBill: { type: Number, required: false, default: 0 },
+    wasteBill: { type: Number, required: false, default: 0 },
     currentBill: { type: Number, required: false, default: 0 },
+    // Rates in effect at generation time, snapshotted so later rate changes
+    // never retroactively alter an already-generated bill.
+    electricityRateSnapshot: { type: Number, required: false },
+    waterSharingDivisorSnapshot: { type: Number, required: false },
+    wasteRateSnapshot: { type: Number, required: false },
     total: { type: Number, required: true },
     paidAmount: { type: Number, default: 0 },
     paid: { type: String, default: false },

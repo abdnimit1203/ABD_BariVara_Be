@@ -42,6 +42,7 @@ function createTenantRecord(data) {
     rentFrom: data.rentFrom ? new Date(data.rentFrom) : new Date(),
     due: Number(data.due) || 0,
     rentTo: null,
+    hasWasteBill: data.hasWasteBill !== false,
   };
 }
 

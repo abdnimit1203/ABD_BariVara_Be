@@ -13,6 +13,33 @@ const {
   applyVacateTenant,
   applyDueAdjustment,
 } = require("../modules/occupancy");
+const {
+  calculateElectricityBill,
+  calculateWaterBill,
+  calculateWasteBill,
+} = require("../modules/billing");
+const { getOrCreateSettings } = require("./utilitySettings");
+
+// Public/tenant/household viewers get a privacy-safe projection of a room —
+// only superadmin/admin see leaseholder PII (name, phone, due, advance, dates).
+// Deliberate default-deny: any authenticated-but-non-staff role gets the same
+// shape as an unauthenticated visitor until ownership-based access is built.
+const PUBLIC_ROOM_FIELDS = ["_id", "roomNo", "position", "category", "rent", "hasMeter", "hasWaterBill", "hasGasBill"];
+
+const canViewFullRoomDetails = (user) => !!user && (user.role === "superadmin" || user.role === "admin");
+
+const isActiveLeaseholder = (leaseholder) =>
+  !!leaseholder && (!leaseholder.rentTo || new Date(leaseholder.rentTo) >= new Date());
+
+const toPublicRoom = (room) => {
+  const plain = typeof room.toObject === "function" ? room.toObject() : room;
+  const shaped = {};
+  PUBLIC_ROOM_FIELDS.forEach((field) => {
+    shaped[field] = plain[field];
+  });
+  shaped.isOccupied = (plain.leaseholder || []).some(isActiveLeaseholder);
+  return shaped;
+};
 
 //categories
 exports.createCategory = async (req, res) => {
@@ -109,16 +136,18 @@ exports.createRoom = async (req, res) => {
 exports.getAllRooms = async (req, res) => {
   try {
     const { roomNo } = req.query;
+    const canViewFull = canViewFullRoomDetails(req.user);
+
     if (roomNo) {
       const room = await Room.findOne({ roomNo: parseInt(roomNo) });
       if (room) {
-        res.status(200).json(room);
+        res.status(200).json(canViewFull ? room : toPublicRoom(room));
       } else {
         res.status(404).json({ message: "Room not found" });
       }
     } else {
       const rooms = await Room.find();
-      res.status(200).json(rooms);
+      res.status(200).json(canViewFull ? rooms : rooms.map(toPublicRoom));
     }
   } catch (error) {
     res
@@ -132,7 +161,8 @@ exports.getRoomById = async (req, res) => {
     const { id } = req.params;
     const room = await Room.findById(id);
     if (room) {
-      res.status(200).json(room);
+      const canViewFull = canViewFullRoomDetails(req.user);
+      res.status(200).json(canViewFull ? room : toPublicRoom(room));
     } else {
       res.status(404).json({ message: "Room not found" });
     }
@@ -618,6 +648,14 @@ exports.createMonthlyBill = async (req, res) => {
     const { roomNo, month, waterBill, gasBill, paid, year } = req.body;
     console.log(month, year);
 
+    // Dynamic rate settings — see implementation_plan.md. Falls back to safe
+    // defaults (waste defaults to OFF, not the seed rate) if the settings
+    // document is somehow unavailable.
+    const settings = await getOrCreateSettings().catch(() => null);
+    const electricityPerUnitCost = settings?.electricityPerUnitCost ?? 10;
+    const waterSharingDivisor = settings?.waterSharingDivisor ?? 3;
+    const defaultWasteCost = settings?.defaultWasteCost ?? 0;
+
     const filter = { year, month };
     const existingData = await MonthlyBill.findOne(filter);
     if (existingData && existingData.bills.some((r) => r.roomNo === roomNo)) {
@@ -723,14 +761,15 @@ exports.createMonthlyBill = async (req, res) => {
       if (currentReading >= previousReading) {
         const usage = currentReading - previousReading;
 
-        currentBill = usage * 10; // Multiplication factor
+        currentBill = calculateElectricityBill(currentReading, previousReading, electricityPerUnitCost);
         // Water Meter Electric Bill calculator
         if (room.hasWaterBill) {
-          const waterUsage = Math.floor(
-            (currentWaterReading - previousWaterReading) / 3
+          waterUnitCost = calculateWaterBill(
+            currentWaterReading,
+            previousWaterReading,
+            waterSharingDivisor,
+            electricityPerUnitCost
           );
-          waterUnitCost = waterUsage * 10; // Multiplication factor
-          console.log("Water Floor : ", waterUsage);
           console.log("waterUnitCost :", waterUnitCost);
         }
         curReading = currentReading;
@@ -745,12 +784,15 @@ exports.createMonthlyBill = async (req, res) => {
 
     const leaseholder = room.leaseholder[0];
     const due = leaseholder.due;
+    // Waste bill: global rate, on/off per tenant (implementation_plan.md section 2c)
+    const wasteBill = calculateWasteBill(leaseholder.hasWasteBill !== false, defaultWasteCost);
     // Calculate total bill
     const totalBill =
       rent +
       due +
       (room.hasWaterBill ? waterUnitCost : 0) +
       (room.hasGasBill ? gasBill : 0) +
+      wasteBill +
       currentBill;
 
     // Update the leaseholder's due if unpaid
@@ -787,7 +829,11 @@ exports.createMonthlyBill = async (req, res) => {
           billingYear: previousYear,
           waterBill: room.hasWaterBill ? waterUnitCost : 0,
           gasBill: room.hasGasBill ? gasBill : 0,
+          wasteBill,
           currentBill,
+          electricityRateSnapshot: electricityPerUnitCost,
+          waterSharingDivisorSnapshot: waterSharingDivisor,
+          wasteRateSnapshot: defaultWasteCost,
           total: totalBill || 0,
           paid: paid || false,
           createdAt: new Date(),
@@ -872,7 +918,7 @@ exports.readAllMonthlyBills = async (req, res) => {
 exports.updateMonthlyBill = async (req, res) => {
   try {
     const { id } = req.params;
-    const { roomNo, waterBill, gasBill, paid, paidAmount } = req.body;
+    const { rent, currentBill, waterBill, gasBill, wasteBill, paid, paidAmount } = req.body;
 
     // Find the parent document that contains the specific bill _id
     const parentBill = await MonthlyBill.findOne({
@@ -897,11 +943,55 @@ exports.updateMonthlyBill = async (req, res) => {
         .json({ error: "Room associated with this bill not found" });
     }
 
-    // Update waterBill and gasBill if provided
-    if (waterBill !== undefined) bill.waterBill = waterBill;
-    if (gasBill !== undefined) bill.gasBill = gasBill;
+    let hasChargeComponentUpdated = false;
 
-    // Handle payment settlement
+    // Update genuine charge components with numeric validation
+    if (rent !== undefined) {
+      const num = Number(rent);
+      if (isNaN(num) || num < 0) return res.status(400).json({ error: "Invalid rent amount" });
+      bill.rent = num;
+      hasChargeComponentUpdated = true;
+    }
+    if (currentBill !== undefined) {
+      const num = Number(currentBill);
+      if (isNaN(num) || num < 0) return res.status(400).json({ error: "Invalid electric bill amount" });
+      bill.currentBill = num;
+      hasChargeComponentUpdated = true;
+    }
+    if (waterBill !== undefined) {
+      const num = Number(waterBill);
+      if (isNaN(num) || num < 0) return res.status(400).json({ error: "Invalid water bill amount" });
+      bill.waterBill = num;
+      hasChargeComponentUpdated = true;
+    }
+    if (gasBill !== undefined) {
+      const num = Number(gasBill);
+      if (isNaN(num) || num < 0) return res.status(400).json({ error: "Invalid gas bill amount" });
+      bill.gasBill = num;
+      hasChargeComponentUpdated = true;
+    }
+    if (wasteBill !== undefined) {
+      const num = Number(wasteBill);
+      if (isNaN(num) || num < 0) return res.status(400).json({ error: "Invalid waste bill amount" });
+      bill.wasteBill = num;
+      hasChargeComponentUpdated = true;
+    }
+
+    // Recalculate bill total if any charge component changed
+    if (hasChargeComponentUpdated) {
+      bill.total =
+        (bill.rent || 0) +
+        (bill.due || 0) +
+        (bill.waterBill || 0) +
+        (bill.gasBill || 0) +
+        (bill.wasteBill || 0) +
+        (bill.currentBill || 0);
+      bill.updatedAt = new Date();
+    }
+
+    // Handle payment settlement if paidAmount is provided
+    const leaseholder = room.leaseholder && room.leaseholder.length > 0 ? room.leaseholder[0] : null;
+
     if (paidAmount !== undefined && paidAmount !== null && String(paidAmount).trim() !== "") {
       const numericPaidAmount = Number(paidAmount);
       if (isNaN(numericPaidAmount)) {
@@ -917,9 +1007,14 @@ exports.updateMonthlyBill = async (req, res) => {
       bill.updatedAt = new Date();
 
       // Update the active tenant's running due balance
-      const leaseholder = room.leaseholder && room.leaseholder.length > 0 ? room.leaseholder[0] : null;
       if (leaseholder) {
         leaseholder.due = paymentDifference;
+        await room.save();
+      }
+    } else if (hasChargeComponentUpdated && bill.paid === "true") {
+      // If charge components were edited on an already-settled bill, preserve the invariant: due = total - paidAmount
+      if (leaseholder) {
+        leaseholder.due = bill.total - (bill.paidAmount || 0);
         await room.save();
       }
     } else if (paid !== undefined) {
