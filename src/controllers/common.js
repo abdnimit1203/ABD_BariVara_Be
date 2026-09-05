@@ -17,6 +17,7 @@ const {
   calculateElectricityBill,
   calculateWaterBill,
   calculateWasteBill,
+  calculateBillTotal,
 } = require("../modules/billing");
 const { getOrCreateSettings } = require("./utilitySettings");
 
@@ -787,13 +788,14 @@ exports.createMonthlyBill = async (req, res) => {
     // Waste bill: global rate, on/off per tenant (implementation_plan.md section 2c)
     const wasteBill = calculateWasteBill(leaseholder.hasWasteBill !== false, defaultWasteCost);
     // Calculate total bill
-    const totalBill =
-      rent +
-      due +
-      (room.hasWaterBill ? waterUnitCost : 0) +
-      (room.hasGasBill ? gasBill : 0) +
-      wasteBill +
-      currentBill;
+    const totalBill = calculateBillTotal({
+      rent,
+      due,
+      waterBill: room.hasWaterBill ? waterUnitCost : 0,
+      gasBill: room.hasGasBill ? gasBill : 0,
+      wasteBill,
+      currentBill,
+    });
 
     // Update the leaseholder's due if unpaid
     if (!paid) {
@@ -918,7 +920,7 @@ exports.readAllMonthlyBills = async (req, res) => {
 exports.updateMonthlyBill = async (req, res) => {
   try {
     const { id } = req.params;
-    const { rent, currentBill, waterBill, gasBill, wasteBill, paid, paidAmount } = req.body;
+    const { rent, currentBill, waterBill, gasBill, wasteBill, due, paid, paidAmount } = req.body;
 
     // Find the parent document that contains the specific bill _id
     const parentBill = await MonthlyBill.findOne({
@@ -976,16 +978,23 @@ exports.updateMonthlyBill = async (req, res) => {
       bill.wasteBill = num;
       hasChargeComponentUpdated = true;
     }
+    if (due !== undefined) {
+      const num = Number(due);
+      if (isNaN(num) || num < 0) return res.status(400).json({ error: "Invalid due amount" });
+      bill.due = num;
+      hasChargeComponentUpdated = true;
+    }
 
     // Recalculate bill total if any charge component changed
     if (hasChargeComponentUpdated) {
-      bill.total =
-        (bill.rent || 0) +
-        (bill.due || 0) +
-        (bill.waterBill || 0) +
-        (bill.gasBill || 0) +
-        (bill.wasteBill || 0) +
-        (bill.currentBill || 0);
+      bill.total = calculateBillTotal({
+        rent: bill.rent || 0,
+        due: bill.due || 0,
+        waterBill: bill.waterBill || 0,
+        gasBill: bill.gasBill || 0,
+        wasteBill: bill.wasteBill || 0,
+        currentBill: bill.currentBill || 0,
+      });
       bill.updatedAt = new Date();
     }
 
